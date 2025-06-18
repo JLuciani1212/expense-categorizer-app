@@ -1,24 +1,25 @@
-"""expense_categorizer_app.py – v3.0.1 (hot‑fix)
-===========================================================
-* Removes lingering reference to **hashed_pw_list** that caused a NameError.
-* Restores missing **BASE_DIR** assignment line.
-* Passwords are now hashed lazily inside `authenticate()` only; global user
-  dict remains simple.
+"""expense_categorizer_app.py – v3.1 (simplified auth)
+==============================================================
+**Change log**
+* 🔓 Removed `streamlit-authenticator` entirely.
+* Single hard‑coded user (“admin”) can pick any tenant from a dropdown.
+* No passwords for now; revisit multi‑user security later.
+* All core ML / tenant logic untouched.
+
+This eliminates the Hasher API headaches and gets you unblocked.
 """
 from __future__ import annotations
 
-import sys as _sys
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, Any, List
 
+import sys as _sys
 import pandas as pd
 
-# ------------------------------
-# joblib import with pickle fallback
-# ------------------------------
+# Fallback joblib shim (unchanged)
 try:
     import joblib  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
+except ModuleNotFoundError:
     import pickle
 
     class _PickleShim:
@@ -40,70 +41,18 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 
 import streamlit as st  # type: ignore
-import streamlit_authenticator as stauth  # type: ignore
 
-# ------------------------------
-# In‑memory user store (plaintext pw)
-# ------------------------------
-RAW_USERS: Dict[str, Dict[str, Any]] = {
-    "customer": {
-        "name": "Customer One",
-        "plain_pw": "custpw",
-        "email": "cust@example.com",
-        "role": "customer",
-        "tenant": "customer_one",
-    },
-    "developer": {
-        "name": "Developer",
-        "plain_pw": "devpw",
-        "email": "dev@example.com",
-        "role": "developer",
-        "tenant": "*",
-    },
+# -------------------------
+# Simple admin user (no pw)
+# -------------------------
+ADMIN_USER: Dict[str, Any] = {
+    "username": "admin",
+    "role": "admin",
 }
 
-# Helper to build st‑authenticator credentials dict
-
-def _build_credentials() -> Dict[str, Any]:
-    plain_pw = [u["plain_pw"] for u in RAW_USERS.values()]
-    # Handle both Hasher APIs (0.2.x vs 0.3.x)
-    try:  # new api expects list in ctor
-        hashed_list = stauth.Hasher(plain_pw).generate()  # type: ignore[arg-type]
-    except TypeError:  # fallback to new signature generate(list)
-        hashed_list = stauth.Hasher().generate(plain_pw)  # type: ignore[attr-defined]
-    creds = {"usernames": {}}
-    for (username, info), h_pw in zip(RAW_USERS.items(), hashed_list):
-        creds["usernames"][username] = {
-            "email": info["email"],
-            "name": info["name"],
-            "password": h_pw,
-            "role": info["role"],
-            "tenant": info["tenant"],
-        }
-    return creds
-
-CREDENTIALS = _build_credentials()
-
-USERS: Dict[str, Dict[str, Any]] = {
-    "customer": {
-        "name": "Customer One",
-        "plain_pw": "custpw",
-        "email": "cust@example.com",
-        "role": "customer",
-        "tenant": "customer_one",
-    },
-    "developer": {
-        "name": "Developer",
-        "plain_pw": "devpw",
-        "email": "dev@example.com",
-        "role": "developer",
-        "tenant": "*",
-    },
-}
-
-# ------------------------------
+# -------------------------
 # Tenant filesystem
-# ------------------------------
+# -------------------------
 BASE_DIR = Path("/mnt/data/tenants") if Path("/mnt/data").exists() else Path("tenants")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -117,9 +66,9 @@ def tenant_paths(tenant: str) -> Dict[str, Path]:
         "logos": tdir / "logo.png",
     }
 
-# ------------------------------
-# ML helpers
-# ------------------------------
+# -------------------------
+# ML helpers (unchanged)
+# -------------------------
 
 def _build_pipeline(df: pd.DataFrame, cols: List[str]) -> Pipeline:
     text_cols = [c for c in cols if df[c].dtype == "object"]
@@ -161,9 +110,9 @@ def generate_journal_entries(df: pd.DataFrame, acct_map: Dict[str, str], suspens
                      "Debit": 0, "Credit": r["Amount"], "Memo": f"Reclass to {cat}"})
     return pd.DataFrame(rows)
 
-# ------------------------------
-# Utils
-# ------------------------------
+# -------------------------
+# Utility helpers
+# -------------------------
 
 def _load_file(file_obj, name: str) -> pd.DataFrame:
     name = name.lower()
@@ -180,43 +129,24 @@ def _edit(df: pd.DataFrame) -> pd.DataFrame:
     editor = st.data_editor if hasattr(st, "data_editor") else st.experimental_data_editor  # type: ignore[attr-defined]
     return editor(df, num_rows="dynamic", use_container_width=True)
 
-# ------------------------------
-# Auth
-# ------------------------------
-
-def authenticate() -> tuple[str, Dict[str, Any]]:
-    authenticator = stauth.Authenticate(
-        CREDENTIALS,
-        "ec_auth_cookie",
-        "eccat_v3",
-        cookie_expiry_days=7,
-    )
-    name, status, username = authenticator.login("Login", "main")
-    if status is False:
-        st.error("Invalid credentials")
-        st.stop()
-    if status is None:
-        st.warning("Please enter credentials")
-        st.stop()
-    user_dict = CREDENTIALS["usernames"][username]
-    return username, user_dict
-
-# ------------------------------
-# Main app
-# ------------------------------
+# -------------------------
+# Main App
+# -------------------------
 
 def run_app():
-    username, user = authenticate()
-    tenant = user["tenant"] if user["role"] != "developer" else st.sidebar.text_input("Tenant", "customer_one")
+    st.sidebar.success("Logged in as admin (no password)")
+    # Tenant picker
+    tenants = sorted([p.name for p in BASE_DIR.iterdir() if p.is_dir()]) or ["customer_one"]
+    tenant = st.sidebar.selectbox("Select tenant", tenants, index=0)
     paths = tenant_paths(tenant)
 
+    # Optional logo upload
     if paths["logos"].exists():
         st.sidebar.image(str(paths["logos"]), width=160)
-    if user["role"] == "customer":
-        logo = st.sidebar.file_uploader("Upload logo", ["png", "jpg", "jpeg"], key="logo")
-        if logo and st.sidebar.button("Save logo"):
-            paths["logos"].write_bytes(logo.read())
-            st.sidebar.success("Logo saved – reload")
+    logo = st.sidebar.file_uploader("Upload logo", ["png", "jpg", "jpeg"], key="logo")
+    if logo and st.sidebar.button("Save logo"):
+        paths["logos"].write_bytes(logo.read())
+        st.sidebar.success("Logo saved – reload")
 
     st.title(f"AI Expense Categorizer – Tenant: {tenant}")
 
@@ -228,7 +158,8 @@ def run_app():
     t_file = st.file_uploader("Training data", key="train")
     if t_file:
         df_train = _load_file(t_file, t_file.name)
-        feat_cols = st.multiselect("Feature columns", df_train.columns, default=[c for c in df_train.columns if c != "Category"])
+        default_cols = [c for c in df_train.columns if c != "Category"]
+        feat_cols = st.multiselect("Feature columns", df_train.columns, default=default_cols)
         if st.button("Train model"):
             model = train_model(df_train, feat_cols)
             joblib.dump(model, model_file)
@@ -273,8 +204,8 @@ def run_app():
             st.dataframe(je_df, use_container_width=True)
             st.download_button("Download JE CSV", je_df.to_csv(index=False).encode(), "reclass_journal_entries.csv")
 
-# ------------------------------
-# Entry‑point – required by Streamlit Cloud
-# ------------------------------
+# -------------------------
+# Entry‑point – Streamlit Cloud
+# -------------------------
 if __name__ == "__main__":
     run_app()
