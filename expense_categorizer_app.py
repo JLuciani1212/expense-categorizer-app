@@ -110,6 +110,14 @@ def _build_pipeline(df: pd.DataFrame, feat_cols: List[str]) -> Pipeline:
 # -----------------------------------------------------------------------------
 
 def train_model(df: pd.DataFrame, feat_cols: List[str], target: str = "Category") -> Pipeline:
+    # Drop rows without target
+    missing_target = df[target].isna() | (df[target].astype(str).str.strip() == "")
+    if missing_target.any():
+        st.warning(f"Dropping {missing_target.sum()} rows with blank '{target}'")
+        df = df[~missing_target]
+    if df.empty:
+        raise ValueError("Training data has no rows with a valid Category label.")
+
     df = _prep_frame(df, feat_cols)
     pipe = _build_pipeline(df, feat_cols)
     pipe.fit(df[feat_cols], df[target])
@@ -201,4 +209,45 @@ def run_app():
     st.header("1 · Train / Retrain")
     t_file = st.file_uploader("Training data (CSV/XLSX/JSON)")
     if t_file:
-        df_raw = _load_file(t_file, t
+        df_raw = _load_file(t_file, t_file.name)
+        col_map, feat_cols = mapping_editor(df_raw)
+        if col_map and feat_cols:
+            df_train = df_raw.rename(columns=col_map)[list(col_map.values())]
+            if st.button("Train model"):
+                try:
+                    model = train_model(df_train, feat_cols)
+                    joblib.dump(model, model_file)
+                    st.success("Model trained & saved ✅")
+                except ValueError as e:
+                    st.error(str(e))
+    else:
+        st.info("Upload a training file to begin.")
+
+    # ---------------- PREDICT -----------------
+    st.header("2 · Review & finalize new spend")
+    if model is None or not col_map:
+        st.info("Train a model first to enable prediction.")
+        return
+
+    n_file = st.file_uploader("New-period spend file", key="new")
+    if n_file:
+        df_new_raw = _load_file(n_file, n_file.name)
+        missing = [c for c in col_map.keys() if c not in df_new_raw.columns]
+        if missing:
+            st.error(f"New file missing mapped columns: {', '.join(missing)}")
+            return
+        df_new = df_new_raw.rename(columns=col_map)
+
+        # Format date cols to MM/DD/YYYY
+        for c in df_new.columns:
+            if c.lower() in {"date", "transactiondate", "transaction_date"} or pd.api.types.is_datetime64_any_dtype(df_new[c]):
+                df_new[c] = pd.to_datetime(df_new[c], errors="coerce").dt.strftime("%m/%d/%Y")
+
+        df_out = predict_df(model, df_new)
+        st.dataframe(df_out, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# Entry point
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    run_app()
