@@ -85,9 +85,8 @@ _RAW_USERS = {
         "tenant": "*",  # wildcard
     },
 }
-# Hash the plaintext passwords – streamlit_authenticator expects hashed list
-hashed_pw_list = stauth.Hasher([u["plain_pw"] for u in _RAW_USERS.values()]).generate()
-USERS: Dict[str, Dict[str, Any]] = {}
+# Store user metadata (passwords will be hashed lazily inside `authenticate()`)
+USERS: Dict[str, Dict[str, Any]] = _RAW_USERS  # type: ignore
 for (username, info), hashed in zip(_RAW_USERS.items(), hashed_pw_list):
     info = info.copy()
     info["password"] = hashed
@@ -176,9 +175,18 @@ def _edit(df: pd.DataFrame) -> pd.DataFrame:
 
 def authenticate() -> tuple[bool, str, Dict[str, Any]]:
     """Handle login and tenant selection."""
+    # Hash plaintext passwords on first call (avoids import‑time errors in some envs)
+    if "_hashed_pw" not in st.session_state:
+        try:
+            hashed_pw = stauth.Hasher([u["plain_pw"] for u in USERS.values()]).generate()
+        except Exception as e:  # pragma: no cover
+            st.error(f"Password hashing failed: {e}")
+            st.stop()
+        st.session_state["_hashed_pw"] = hashed_pw
+
     names = [info["name"] for info in USERS.values()]
     usernames = list(USERS.keys())
-    hashed = [info["password"] for info in USERS.values()]
+    hashed = st.session_state["_hashed_pw"]
 
     authenticator = stauth.Authenticate(
         names,
