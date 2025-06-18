@@ -1,13 +1,13 @@
-"""expense_categorizer_app.py – v3.2 (column‑mapping UI)
-===============================================================
-* 🗂️ **New column‑mapping step** when you upload a training file:
-  * Shows every dataset header.
-  * Let’s you map each to a *Program Header* (editable) or deselect by un‑ticking *Include*.
-  * Must keep (or map something to) `Category` for the target label.
-* The mapping is saved in `st.session_state["col_map"]` and is automatically applied to **new‑spend** files.
-* You can add new program headers simply by typing a fresh name in the *Program Header* column.
-
-No authentication changes; still a single admin with tenant picker.
+"""expense_categorizer_app.py – v3.2.1 (robust column‑mapping + empty‑text guard)
+==========================================================================
+Fixes & tweaks
+--------------
+* 🛠 **Fixed** accidental duplicate call in `_build_pipeline` that caused a
+  syntax/runtime error.
+* 🛠 Added missing `Any` import.
+* 🚦 `_build_pipeline` now *skips* text columns with empty vocab and raises a
+  friendly error if *all* feature columns are dropped.
+* Column‑mapping UI and single‑admin flow unchanged from v3.2.
 """
 from __future__ import annotations
 
@@ -63,13 +63,30 @@ def tenant_paths(tenant: str) -> Dict[str, Path]:
 # -------------------------
 
 def _build_pipeline(df: pd.DataFrame, cols: List[str]) -> Pipeline:
+    """Build an sklearn Pipeline and skip blank text columns to avoid
+    "empty vocabulary" errors."""
     text_cols = [c for c in cols if df[c].dtype == "object"]
     num_cols = [c for c in cols if c not in text_cols]
-    transformers = [(f"tfidf_{c}", TfidfVectorizer(stop_words="english"), c) for c in text_cols]
+
+    valid_text_cols: List[str] = []
+    for col in text_cols:
+        series = df[col].astype(str).str.strip().replace({"nan": "", "None": ""})
+        if (series.str.len() > 0).any():
+            valid_text_cols.append(col)
+    text_cols = valid_text_cols
+
+    transformers: List[Any] = [(f"tfidf_{c}", TfidfVectorizer(stop_words="english"), c) for c in text_cols]
     if num_cols:
         transformers.append(("num", "passthrough", num_cols))
+
+    if not transformers:
+        raise ValueError("No usable feature columns after preprocessing. Please include at least one non-empty column.")
+
     pre = ColumnTransformer(transformers, remainder="drop")
-    return Pipeline([("prep", pre), ("clf", LogisticRegression(max_iter=1000, n_jobs=-1))])
+    return Pipeline([
+        ("prep", pre),
+        ("clf", LogisticRegression(max_iter=1000, n_jobs=-1)),
+    ])
 
 
 def train_model(df: pd.DataFrame, cols: List[str], target: str = "Category") -> Pipeline:
@@ -116,11 +133,10 @@ def mapping_editor(df: pd.DataFrame) -> Dict[str, str]:
         "Include": True,
     })
     edited = st.data_editor(map_df, num_rows="dynamic", use_container_width=True)
-    # Build dict of dataset→program for rows where Include True and Program Header not blank
     included = edited[(edited["Include"] == True) & (edited["Program Header"].str.strip() != "")]
     col_map = dict(zip(included["Dataset Header"], included["Program Header"].str.strip()))
     if "Category" not in col_map.values():
-        st.error("You must map at least one column to `Category` – the target label.")
+        st.error("Map at least one column to `Category` (target label).")
         return {}
     if st.button("Confirm mapping"):
         st.session_state["col_map"] = col_map
@@ -133,7 +149,9 @@ def mapping_editor(df: pd.DataFrame) -> Dict[str, str]:
 
 def run_app():
     st.sidebar.success("Logged in as **admin** (no password)")
-    tenant = st.sidebar.selectbox("Tenant", sorted([p.name for p in BASE_DIR.iterdir() if p.is_dir()]) or ["customer_one"], index=0)
+    tenant = st.sidebar.selectbox(
+        "Tenant", sorted([p.name for p in BASE_DIR.iterdir() if p.is_dir()]) or ["customer_one"], index=0
+    )
     paths = tenant_paths(tenant)
 
     st.title(f"AI Expense Categorizer – Tenant: {tenant}")
@@ -150,12 +168,15 @@ def run_app():
         col_map = mapping_editor(df_train_raw)
         if col_map:
             df_train = df_train_raw.rename(columns=col_map)[list(col_map.values())]
-            feature_cols = [c for c in df_train.columns if c != "Category"]
+            feat_cols = [c for c in df_train.columns if c != "Category"]
             if st.button("Train model", key="train_btn"):
-                model = train_model(df_train, feature_cols)
-                joblib.dump(model, model_file)
-                st.success("Model trained & saved ✅")
-                st.session_state["feature_cols"] = feature_cols
+                try:
+                    model = train_model(df_train, feat_cols)
+                    joblib.dump(model, model_file)
+                    st.success("Model trained & saved ✅")
+                    st.session_state["feature_cols"] = feat_cols
+                except ValueError as e:
+                    st.error(str(e))
     else:
         st.info("Upload a training file to begin.")
 
