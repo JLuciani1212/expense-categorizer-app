@@ -69,28 +69,31 @@ except ModuleNotFoundError:  # pragma: no cover
 # ------------------------------------------------------------------
 # Simple user store – replace with DB/SSO in prod
 # ------------------------------------------------------------------
-hasher = stauth.Hasher(["custpw", "devpw"]).generate()
-USERS = {
+_RAW_USERS = {
     "customer": {
         "name": "Customer One",
-        "password": hasher[0],
+        "plain_pw": "custpw",
         "email": "cust@example.com",
         "role": "customer",
         "tenant": "customer_one",
     },
     "developer": {
         "name": "Developer",
-        "password": hasher[1],
+        "plain_pw": "devpw",
         "email": "dev@example.com",
         "role": "developer",
         "tenant": "*",  # wildcard
     },
 }
+# Hash the plaintext passwords – streamlit_authenticator expects hashed list
+hashed_pw_list = stauth.Hasher([u["plain_pw"] for u in _RAW_USERS.values()]).generate()
+USERS: Dict[str, Dict[str, Any]] = {}
+for (username, info), hashed in zip(_RAW_USERS.items(), hashed_pw_list):
+    info = info.copy()
+    info["password"] = hashed
+    USERS[username] = info
 
-# ------------------------------------------------------------------
-# Tenant paths / helpers
-# ------------------------------------------------------------------
-BASE_DIR = Path("/mnt/data/tenants") if Path("/mnt/data").exists() else Path("tenants")
+# ------------------------------------------------------------------ = Path("/mnt/data/tenants") if Path("/mnt/data").exists() else Path("tenants")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -172,26 +175,36 @@ def _edit(df: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------------------------
 
 def authenticate() -> tuple[bool, str, Dict[str, Any]]:
-    names = {u: USERS[u]["name"] for u in USERS}
-    pwds = {u: USERS[u]["password"] for u in USERS}
-    cookies = {
-        "expiry_days": 7,
-        "key": "ec_auth",
-        "name": "ec_auth_cookie",
-    }
-    authenticator = stauth.Authenticate(names, pwds, cookies, "eccat_v3")
+    """Handle login and tenant selection."""
+    names = [info["name"] for info in USERS.values()]
+    usernames = list(USERS.keys())
+    hashed = [info["password"] for info in USERS.values()]
+
+    authenticator = stauth.Authenticate(
+        names,
+        usernames,
+        hashed,
+        "ec_auth_cookie",   # cookie name
+        "eccat_v3",         # signature key
+        cookie_expiry_days=7,
+    )
 
     name, auth_status, username = authenticator.login("Login", "main")
     if not auth_status:
-        st.warning("Please enter your credentials." if auth_status is None else "Invalid credentials.")
+        st.warning(
+            "Please enter your credentials." if auth_status is None else "Invalid credentials."
+        )
         st.stop()
+
     user_info = USERS[username]
     st.sidebar.success(f"Logged in as {user_info['name']}")
+
     if user_info["role"] == "developer":
         tenants = [p.name for p in BASE_DIR.iterdir() if p.is_dir()] or ["customer_one"]
         tenant = st.sidebar.selectbox("Select tenant", tenants)
     else:
         tenant = user_info["tenant"]
+
     st.sidebar.caption(f"Active tenant: **{tenant}**")
     return True, tenant, user_info
 
