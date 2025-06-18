@@ -45,6 +45,45 @@ import streamlit_authenticator as stauth  # type: ignore
 # ------------------------------
 # In‑memory user store (plaintext pw)
 # ------------------------------
+RAW_USERS: Dict[str, Dict[str, Any]] = {
+    "customer": {
+        "name": "Customer One",
+        "plain_pw": "custpw",
+        "email": "cust@example.com",
+        "role": "customer",
+        "tenant": "customer_one",
+    },
+    "developer": {
+        "name": "Developer",
+        "plain_pw": "devpw",
+        "email": "dev@example.com",
+        "role": "developer",
+        "tenant": "*",
+    },
+}
+
+# Helper to build st‑authenticator credentials dict
+
+def _build_credentials() -> Dict[str, Any]:
+    plain_pw = [u["plain_pw"] for u in RAW_USERS.values()]
+    # Handle both Hasher APIs (0.2.x vs 0.3.x)
+    try:  # new api expects list in ctor
+        hashed_list = stauth.Hasher(plain_pw).generate()  # type: ignore[arg-type]
+    except TypeError:  # fallback to new signature generate(list)
+        hashed_list = stauth.Hasher().generate(plain_pw)  # type: ignore[attr-defined]
+    creds = {"usernames": {}}
+    for (username, info), h_pw in zip(RAW_USERS.items(), hashed_list):
+        creds["usernames"][username] = {
+            "email": info["email"],
+            "name": info["name"],
+            "password": h_pw,
+            "role": info["role"],
+            "tenant": info["tenant"],
+        }
+    return creds
+
+CREDENTIALS = _build_credentials()
+
 USERS: Dict[str, Dict[str, Any]] = {
     "customer": {
         "name": "Customer One",
@@ -146,21 +185,12 @@ def _edit(df: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------
 
 def authenticate() -> tuple[str, Dict[str, Any]]:
-    if "_hashed_pw" not in st.session_state:
-        st.session_state["_hashed_pw"] = stauth.Hasher([u["plain_pw"] for u in USERS.values()]).generate()
-    names = [u["name"] for u in USERS.values()]
-    usernames = list(USERS.keys())
-    hashed = st.session_state["_hashed_pw"]
-
     authenticator = stauth.Authenticate(
-        names,
-        usernames,
-        hashed,
+        CREDENTIALS,
         "ec_auth_cookie",
         "eccat_v3",
         cookie_expiry_days=7,
     )
-
     name, status, username = authenticator.login("Login", "main")
     if status is False:
         st.error("Invalid credentials")
@@ -168,7 +198,8 @@ def authenticate() -> tuple[str, Dict[str, Any]]:
     if status is None:
         st.warning("Please enter credentials")
         st.stop()
-    return username, USERS[username]
+    user_dict = CREDENTIALS["usernames"][username]
+    return username, user_dict
 
 # ------------------------------
 # Main app
