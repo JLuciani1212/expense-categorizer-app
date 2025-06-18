@@ -78,7 +78,12 @@ def _build_pipeline(df: pd.DataFrame, feat_cols: List[str]) -> Pipeline:
 
 def train_model(df: pd.DataFrame, feat_cols: List[str], target: str = "Category") -> Pipeline:
     df = df.copy()
-    df[feat_cols] = df[feat_cols].fillna("")
+    text_cols = [c for c in feat_cols if df[c].dtype == "object"]
+    num_cols = [c for c in feat_cols if c not in text_cols]
+    if text_cols:
+        df[text_cols] = df[text_cols].fillna("")
+    if num_cols:
+        df[num_cols] = df[num_cols].fillna(0)
     pipe = _build_pipeline(df, feat_cols)
     pipe.fit(df[feat_cols], df[target])
     pipe.feature_columns_ = feat_cols  # type: ignore[attr-defined]
@@ -87,7 +92,12 @@ def train_model(df: pd.DataFrame, feat_cols: List[str], target: str = "Category"
 
 def predict_df(model: Pipeline, df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df[model.feature_columns_] = df[model.feature_columns_].fillna("")  # type: ignore[attr-defined]
+    text_cols = [c for c in model.feature_columns_ if df[c].dtype == "object"]  # type: ignore[attr-defined]
+    num_cols = [c for c in model.feature_columns_ if c not in text_cols]  # type: ignore[attr-defined]
+    if text_cols:
+        df[text_cols] = df[text_cols].fillna("")
+    if num_cols:
+        df[num_cols] = df[num_cols].fillna(0)
     preds = model.predict(df[model.feature_columns_])  # type: ignore[attr-defined]
     probs = model.predict_proba(df[model.feature_columns_]).max(axis=1)  # type: ignore[attr-defined]
     df["Suggested Category"] = preds
@@ -192,8 +202,19 @@ def run_app():
             st.error(f"New file missing columns: {', '.join(missing)}")
             return
         df_new = df_new_raw.rename(columns=col_map)
+
+        # ---- Date formatting to MM/DD/YYYY ---------------------------------
+        for col in df_new.columns:
+            if col.lower() in {"date", "transactiondate", "transaction_date"} or pd.api.types.is_datetime64_any_dtype(df_new[col]):
+                try:
+                    df_new[col] = pd.to_datetime(df_new[col], errors="coerce").dt.strftime("%m/%d/%Y")
+                except Exception:
+                    # leave as is if conversion fails
+                    pass
+        # -------------------------------------------------------------------
+
         df_out = predict_df(model, df_new)
-        st.dataframe(df_out, use_container_width=True)
+        st.dataframe(df_out, use_container_width=True)(df_out, use_container_width=True)
 
 # ------------------------------------------------------------------
 # Entry point
