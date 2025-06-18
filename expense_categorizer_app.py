@@ -241,3 +241,9 @@ def run_app():
             st.subheader("Suggested JEs")
             st.dataframe(je_df, use_container_width=True)
             st.download_button("Download JE CSV", je_df.to_csv(index=False).encode(), "reclass_journal_entries.csv")
+
+# ------------------------------
+# Entry‑point – required by Streamlit Cloud
+# ------------------------------
+if __name__ == "__main__":
+    run_app()
