@@ -22,7 +22,35 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 import pandas as pd
-import joblib
+
+# ------------------------------------------------------------------
+# joblib import with pickle fallback (Streamlit Cloud often lacks joblib)
+# ------------------------------------------------------------------
+try:
+    import joblib  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    import pickle
+    from pathlib import Path as _Path
+
+    class _PickleJoblibWrapper:  # minimal shim for dump/load
+        """Provides joblib-like dump/load using built‑in pickle."""
+
+        @staticmethod
+        def dump(obj, file, **kwargs):  # pylint: disable=unused-argument
+            if isinstance(file, (_Path, str)):
+                with open(file, "wb") as fh:
+                    pickle.dump(obj, fh)
+            else:  # file‑like object
+                pickle.dump(obj, file)
+
+        @staticmethod
+        def load(file, **kwargs):  # pylint: disable=unused-argument
+            if isinstance(file, (_Path, str)):
+                with open(file, "rb") as fh:
+                    return pickle.load(fh)
+            return pickle.load(file)
+
+    joblib = _PickleJoblibWrapper()  # type: ignore
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
