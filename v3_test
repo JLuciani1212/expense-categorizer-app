@@ -15,5 +15,5 @@ git init
 git add expense_categorizer_app.py requirements.txt
 git commit -m "Initial commit – v3.0 multi-tenant"
 # Replace URL with your repo’s HTTPS address
-git remote add origin https://github.com/<your-user>/expense-categorizer-app.git
+git remote add origin https://github.com/JLuciani1212/expense-categorizer-app.git
 git push -u origin main
